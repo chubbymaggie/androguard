@@ -18,53 +18,47 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with Androguard.  If not, see <http://www.gnu.org/licenses/>.
 
+from __future__ import print_function
 import sys
-from optparse import OptionParser
-from xml.dom import minidom
-import codecs
+from argparse import ArgumentParser
 
 from androguard.core import androconf
-from androguard.core.bytecodes import apk
+from androguard.cli import androaxml_main as main
 
 
-option_0 = { 'name' : ('-i', '--input'), 'help' : 'filename input (APK or android\'s binary xml)', 'nargs' : 1 }
-option_1 = { 'name' : ('-o', '--output'), 'help' : 'filename output of the xml', 'nargs' : 1 }
-option_2 = { 'name' : ('-v', '--version'), 'help' : 'version of the API', 'action' : 'count' }
-options = [option_0, option_1, option_2]
+if __name__ == "__main__":
+    parser = ArgumentParser(description="Parses the AndroidManifest.xml either"
+            "direct or from a given APK and prints in XML format or saves to"
+            "file."
+            "This tool can also be used to process any AXML encoded file, for"
+            "example from the layout directory.")
+
+    parser.add_argument("--output", "-o",
+            help="filename to save the decoded AndroidManifest.xml to")
+    parser.add_argument("--version", "-v", action="store_true", default=False,
+            help="Print androguard version and exit")
+
+    parser.add_argument("--input", "-i",
+            help="AndroidManifest.xml or APK to parse (legacy option)")
+    parser.add_argument("file", nargs="?",
+            help="AndroidManifest.xml or APK to parse")
+    args = parser.parse_args()
 
 
-def main(options, arguments) :
-    if options.input != None :
-        buff = ""
+    if args.file and args.input:
+        print("Can not give --input and positional argument! Please use only one of them!")
+        sys.exit(1)
 
-        ret_type = androconf.is_android(options.input)
-        if ret_type == "APK":
-            a = apk.APK(options.input)
-            buff = a.get_android_manifest_xml().toprettyxml(encoding="utf-8")
-        elif ".xml" in options.input:
-            ap = apk.AXMLPrinter(open(options.input, "rb").read())
-            buff = minidom.parseString(ap.get_buff()).toprettyxml(encoding="utf-8")
-        else:
-            print "Unknown file type"
-            return
+    if args.version:
+        print("Androaxml version %s" % androconf.ANDROGUARD_VERSION)
+        sys.exit(0)
 
-        if options.output != None :
-            fd = codecs.open(options.output, "w", "utf-8")
-            fd.write( buff )
-            fd.close()
-        else :
-            print buff
+    if not args.input and not args.file:
+        print("Give one file to decode!")
+        sys.exit(1)
 
-    elif options.version != None :
-        print "Androaxml version %s" % androconf.ANDROGUARD_VERSION
+    if args.file:
+        main(args.file, args.output)
+    elif args.input:
+        main(args.input, args.output)
 
-if __name__ == "__main__" :
-    parser = OptionParser()
-    for option in options :
-        param = option['name']
-        del option['name']
-        parser.add_option(*param, **option)
-
-    options, arguments = parser.parse_args()
-    sys.argv[:] = arguments
-    main(options, arguments)

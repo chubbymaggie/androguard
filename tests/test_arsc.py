@@ -1,98 +1,89 @@
-#!/usr/bin/env python
-
-import logging
-import datetime
-
 import sys
-PATH_INSTALL = "./"
-sys.path.append(PATH_INSTALL)
+import unittest
 
-from optparse import OptionParser
-from androguard.core.analysis import auto
-from androguard.core.androconf import set_debug
+from androguard.core.bytecodes import apk, axml
+from androguard.core.bytecodes.apk import APK
+from operator import itemgetter
 
-option_0 = {'name': ('-d', '--directory'), 'help': 'directory input', 'nargs': 1}
-option_1 = {'name': ('-v', '--verbose'), 'help': 'add debug', 'action': 'count'}
-options = [option_0, option_1]
-
-logger = logging.getLogger("main")
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(logging.Formatter("%(message)s"))
-logger.addHandler(console_handler)
-
-logger.setLevel(logging.INFO)
-
-def test(got, expected):
-    if got == expected:
-        prefix = ' OK '
-    else:
-        prefix = '  X '
-    print '%s got: %s expected: %s' % (prefix, repr(got), repr(expected)),
-    return (got == expected)
+TEST_APP_NAME = "TestsAndroguardApplication"
+TEST_ICONS = {
+    120: "res/drawable-ldpi/icon.png",
+    160: "res/drawable-mdpi/icon.png",
+    240: "res/drawable-hdpi/icon.png",
+    65536: "res/drawable-hdpi/icon.png"
+}
+TEST_CONFIGS = {
+    "layout": [axml.ARSCResTableConfig.default_config()],
+    "string": [axml.ARSCResTableConfig.default_config()],
+    "drawable": [
+        axml.ARSCResTableConfig(sdkVersion=4, density=120),
+        axml.ARSCResTableConfig(sdkVersion=4, density=160),
+        axml.ARSCResTableConfig(sdkVersion=4, density=240)
+    ]
+}
 
 
-class AndroLog:
-  def __init__(self, id_file, filename):
-    self.id_file = id_file
-    self.filename = filename
+class ARSCTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with open("examples/android/TestsAndroguard/bin/TestActivity.apk",
+                  "rb") as fd:
+            cls.apk = apk.APK(fd.read(), True)
 
-  def dump(self, msg):
-    now = datetime.datetime.now()
-    str_date = now.strftime("%Y-%m-%d %H:%M:%S ")
-    logger.info(str_date + "%s[%d]: %s" % (self.filename, self.id_file, msg))
+    def testARSC(self):
+        arsc = self.apk.get_android_resources()
+        self.assertTrue(arsc)
 
-  def error(self, msg):
-    now = datetime.datetime.now()
-    str_date = now.strftime("%Y-%m-%d %H:%M:%S ")
-    logger.info(str_date + "ERROR %s[%d]: %s" % (self.filename, self.id_file, msg))
-    import traceback
-    traceback.print_exc()
+    def testAppName(self):
+        app_name = self.apk.get_app_name()
+        self.assertEqual(app_name, TEST_APP_NAME, "Couldn't deduce application/activity label")
 
+    def testAppIcon(self):
+        for wanted_density, correct_path in TEST_ICONS.items():
+            app_icon_path = self.apk.get_app_icon(wanted_density)
+            self.assertEqual(app_icon_path, correct_path,
+                             "Incorrect icon path for requested density")
 
-class MyARSCAnalysis(auto.DirectoryAndroAnalysis):
-  def __init__(self, directory):
-    super(MyARSCAnalysis, self).__init__(directory)
+    def testTypeConfigs(self):
+        arsc = self.apk.get_android_resources()
+        configs = arsc.get_type_configs(None)
 
-  def filter_file(self, log, fileraw):
-    ret, file_type = super(MyARSCAnalysis, self).filter_file(log, fileraw)
-    if file_type != "APK" and file_type != "ARSC":
-      return (False, None)
-    return (ret, file_type)
+        for res_type, test_configs in list(TEST_CONFIGS.items()):
+            config_set = set(test_configs)
+            self.assertIn(res_type, configs,
+                          "resource type %s was not found" % res_type)
+            for config in configs[res_type]:
+                print(config.get_config_name_friendly())
+                self.assertIn(config, config_set,
+                              "config %r was not expected" % config)
+                config_set.remove(config)
 
-  def analysis_arsc(self, log, arsc):
-    log.dump("%s" % str(arsc))
-    return False
+            self.assertEqual(len(config_set), 0,
+                             "configs were not found: %s" % config_set)
 
-  def analysis_apk(self, log, apk):
-    if apk.is_valid_APK():
-      log.dump("%s" % str(apk.get_android_resources()))
-    return False
+        unexpected_types = set(TEST_CONFIGS.keys()) - set(configs.keys())
+        self.assertEqual(len(unexpected_types), 0,
+                         "received unexpected resource types: %s" % unexpected_types)
 
-  def crash(self, log, why):
-    log.error(why)
+    def testFallback(self):
+        a = APK("examples/tests/com.teleca.jamendo_35.apk")
 
+        # Should use the fallback
+        self.assertEqual(a.get_app_name(), "Jamendo")
+        res_parser = a.get_android_resources()
 
-def main(options, arguments):
-  if options.verbose:
-    set_debug()
+        res_id = int(a.get_element('application', 'label')[1:], 16)
 
-  if options.directory:
-    settings = {
-      "my": MyARSCAnalysis(options.directory),
-      "log": AndroLog,
-      "max_fetcher": 3,
-    }
+        # Default Mode, no config
+        self.assertEqual(len(res_parser.get_res_configs(res_id)), 2)
+        # With default config, but fallback
+        self.assertEqual(len(res_parser.get_res_configs(res_id, axml.ARSCResTableConfig.default_config())), 1)
+        # With default config but no fallback
+        self.assertEqual(len(res_parser.get_res_configs(res_id, axml.ARSCResTableConfig.default_config(), fallback=False)), 0)
 
-    aa = auto.AndroAuto(settings)
-    aa.go()
+        # Also test on resolver:
+        self.assertListEqual(list(map(itemgetter(1), res_parser.get_resolved_res_configs(res_id))), ["Jamendo", "Jamendo"])
+        self.assertListEqual(list(map(itemgetter(1), res_parser.get_resolved_res_configs(res_id, axml.ARSCResTableConfig.default_config()))), ["Jamendo"])
 
-if __name__ == "__main__":
-    parser = OptionParser()
-    for option in options:
-        param = option['name']
-        del option['name']
-        parser.add_option(*param, **option)
-
-    options, arguments = parser.parse_args()
-    sys.argv[:] = arguments
-    main(options, arguments)
+if __name__ == '__main__':
+    unittest.main()

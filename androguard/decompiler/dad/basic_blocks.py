@@ -15,11 +15,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from builtins import zip
+from builtins import range
+from builtins import object
 import logging
 from collections import defaultdict
 from androguard.decompiler.dad.opcode_ins import INSTRUCTION_SET
+from androguard.decompiler.dad.instruction import MoveExceptionExpression
 from androguard.decompiler.dad.node import Node
-
+from androguard.decompiler.dad.util import get_type
 
 logger = logging.getLogger('dad.basic_blocks')
 
@@ -31,13 +35,14 @@ class BasicBlock(Node):
         self.ins_range = None
         self.loc_ins = None
         self.var_to_declare = set()
+        self.catch_type = None
 
     def get_ins(self):
         return self.ins
 
     def get_loc_with_ins(self):
         if self.loc_ins is None:
-            self.loc_ins = zip(range(*self.ins_range), self.ins)
+            self.loc_ins = list(zip(range(*self.ins_range), self.ins))
         return self.loc_ins
 
     def remove_ins(self, loc, ins):
@@ -56,6 +61,9 @@ class BasicBlock(Node):
         self.ins_range = [num, last_ins_num]
         self.loc_ins = None
         return last_ins_num
+
+    def set_catch_type(self, _type):
+        self.catch_type = _type
 
 
 class StatementBlock(BasicBlock):
@@ -117,7 +125,7 @@ class SwitchBlock(BasicBlock):
     def update_attribute_with(self, n_map):
         super(SwitchBlock, self).update_attribute_with(n_map)
         self.cases = [n_map.get(n, n) for n in self.cases]
-        for node1, node2 in n_map.iteritems():
+        for node1, node2 in n_map.items():
             if node1 in self.node_to_case:
                 self.node_to_case[node2] = self.node_to_case.pop(node1)
 
@@ -281,16 +289,23 @@ class TryBlock(BasicBlock):
 
 class CatchBlock(BasicBlock):
     def __init__(self, node):
-        self.exception = node.ins[0]
-        node.ins.pop(0)
+        first_ins = node.ins[0]
+        self.exception_ins = None
+        if isinstance(first_ins, MoveExceptionExpression):
+            self.exception_ins = first_ins
+            node.ins.pop(0)
         super(CatchBlock, self).__init__('Catch-%s' % node.name, node.ins)
         self.catch_start = node
+        self.catch_type = node.catch_type
 
     def visit(self, visitor):
         visitor.visit_catch_node(self)
 
     def visit_exception(self, visitor):
-        visitor.visit_ins(self.exception)
+        if self.exception_ins:
+            visitor.visit_ins(self.exception_ins)
+        else:
+            visitor.write(get_type(self.catch_type))
 
     def __str__(self):
         return 'Catch(%s)' % self.name
@@ -311,10 +326,10 @@ def build_node_from_block(block, vmap, gen_ret, exception_type=None):
             _ins = INSTRUCTION_SET[0]
         # fill-array-data
         if opcode == 0x26:
-            fillaray = block.get_special_ins(idx)
-            lins.append(_ins(ins, vmap, fillaray))
+            fillarray = block.get_special_ins(idx)
+            lins.append(_ins(ins, vmap, fillarray))
         # invoke-kind[/range]
-        elif (0x6e <= opcode <= 0x72 or 0x74 <= opcode <= 0x78):
+        elif 0x6e <= opcode <= 0x72 or 0x74 <= opcode <= 0x78:
             lins.append(_ins(ins, vmap, gen_ret))
         # filled-new-array[/range]
         elif 0x24 <= opcode <= 0x25:
@@ -354,4 +369,3 @@ def build_node_from_block(block, vmap, gen_ret, exception_type=None):
             lins.pop()
         node = StatementBlock(name, lins)
     return node
-
